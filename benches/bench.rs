@@ -4,14 +4,14 @@ extern crate quick_xml;
 extern crate test;
 
 use quick_xml::events::Event;
-use quick_xml::Reader;
+use quick_xml::{PositionWithLine, Reader};
 use test::Bencher;
 
 #[bench]
 fn bench_quick_xml_normal(b: &mut Bencher) {
     let src: &[u8] = include_bytes!("../tests/sample_rss.xml");
     b.iter(|| {
-        let mut r = Reader::from_reader(src);
+        let mut r = Reader::from_reader_with_position_tracker(src, PositionWithLine::default());
         r.check_end_names(false).check_comments(false);
         let mut count = test::black_box(0);
         let mut buf = Vec::new();
@@ -81,7 +81,7 @@ fn bench_quick_xml_escaped(b: &mut Bencher) {
 fn bench_quick_xml_normal_trimmed(b: &mut Bencher) {
     let src: &[u8] = include_bytes!("../tests/sample_rss.xml");
     b.iter(|| {
-        let mut r = Reader::from_reader(src);
+        let mut r = Reader::from_reader_with_position_tracker(src, PositionWithLine::default());
         r.check_end_names(false)
             .check_comments(false)
             .trim_text(true);

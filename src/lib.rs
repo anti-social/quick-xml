@@ -140,5 +140,5 @@ mod writer;
 #[cfg(feature = "serialize")]
 pub use errors::serialize::DeError;
 pub use errors::{Error, Result};
-pub use reader::Reader;
+pub use reader::{JustPosition, PositionWithLine, Reader};
 pub use writer::Writer;

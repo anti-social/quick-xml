@@ -13,7 +13,7 @@ use std::str::from_utf8;
 use self::attributes::{Attribute, Attributes};
 use errors::{Error, Result};
 use escape::{do_unescape, escape};
-use reader::Reader;
+use reader::{Position, Reader};
 
 use memchr;
 
@@ -237,7 +237,9 @@ impl<'a> BytesStart<'a> {
     /// [`unescaped()`]: #method.unescaped
     /// [`Reader::decode()`]: ../reader/struct.Reader.html#method.decode
     #[inline]
-    pub fn unescape_and_decode<B: BufRead>(&self, reader: &Reader<B>) -> Result<String> {
+    pub fn unescape_and_decode<B: BufRead, P: Position>(
+        &self, reader: &Reader<B, P>
+    ) -> Result<String> {
         self.do_unescape_and_decode_with_custom_entities(reader, None)
     }
 
@@ -256,9 +258,9 @@ impl<'a> BytesStart<'a> {
     ///
     /// The keys and values of `custom_entities`, if any, must be valid UTF-8.
     #[inline]
-    pub fn unescape_and_decode_with_custom_entities<B: BufRead>(
+    pub fn unescape_and_decode_with_custom_entities<B: BufRead, P: Position>(
         &self,
-        reader: &Reader<B>,
+        reader: &Reader<B, P>,
         custom_entities: &HashMap<Vec<u8>, Vec<u8>>,
     ) -> Result<String> {
         self.do_unescape_and_decode_with_custom_entities(reader, Some(custom_entities))
@@ -266,9 +268,9 @@ impl<'a> BytesStart<'a> {
 
     #[cfg(feature = "encoding")]
     #[inline]
-    fn do_unescape_and_decode_with_custom_entities<B: BufRead>(
+    fn do_unescape_and_decode_with_custom_entities<B: BufRead, P: Position>(
         &self,
-        reader: &Reader<B>,
+        reader: &Reader<B, P>,
         custom_entities: Option<&HashMap<Vec<u8>, Vec<u8>>>,
     ) -> Result<String> {
         let decoded = reader.decode(&*self);
@@ -279,9 +281,9 @@ impl<'a> BytesStart<'a> {
 
     #[cfg(not(feature = "encoding"))]
     #[inline]
-    fn do_unescape_and_decode_with_custom_entities<B: BufRead>(
+    fn do_unescape_and_decode_with_custom_entities<B: BufRead, P: Position>(
         &self,
-        reader: &Reader<B>,
+        reader: &Reader<B, P>,
         custom_entities: Option<&HashMap<Vec<u8>, Vec<u8>>>,
     ) -> Result<String> {
         let decoded = reader.decode(&*self)?;
@@ -628,9 +630,9 @@ impl<'a> BytesText<'a> {
     /// 1. BytesText::unescaped()
     /// 2. Reader::decode(...)
     #[cfg(not(feature = "encoding"))]
-    pub fn unescape_and_decode_without_bom<B: BufRead>(
+    pub fn unescape_and_decode_without_bom<B: BufRead, P: Position>(
         &self,
-        reader: &Reader<B>,
+        reader: &Reader<B, P>,
     ) -> Result<String> {
         self.do_unescape_and_decode_without_bom(reader, None)
     }
@@ -647,9 +649,9 @@ impl<'a> BytesText<'a> {
     ///
     /// The keys and values of `custom_entities`, if any, must be valid UTF-8.
     #[cfg(feature = "encoding")]
-    pub fn unescape_and_decode_without_bom_with_custom_entities<B: BufRead>(
+    pub fn unescape_and_decode_without_bom_with_custom_entities<B: BufRead, P: Position>(
         &self,
-        reader: &mut Reader<B>,
+        reader: &mut Reader<B, P>,
         custom_entities: &HashMap<Vec<u8>, Vec<u8>>,
     ) -> Result<String> {
         self.do_unescape_and_decode_without_bom(reader, Some(custom_entities))
@@ -667,18 +669,18 @@ impl<'a> BytesText<'a> {
     ///
     /// The keys and values of `custom_entities`, if any, must be valid UTF-8.
     #[cfg(not(feature = "encoding"))]
-    pub fn unescape_and_decode_without_bom_with_custom_entities<B: BufRead>(
+    pub fn unescape_and_decode_without_bom_with_custom_entities<B: BufRead, P: Position>(
         &self,
-        reader: &Reader<B>,
+        reader: &Reader<B, P>,
         custom_entities: &HashMap<Vec<u8>, Vec<u8>>,
     ) -> Result<String> {
         self.do_unescape_and_decode_without_bom(reader, Some(custom_entities))
     }
 
     #[cfg(feature = "encoding")]
-    fn do_unescape_and_decode_without_bom<B: BufRead>(
+    fn do_unescape_and_decode_without_bom<B: BufRead, P: Position>(
         &self,
-        reader: &mut Reader<B>,
+        reader: &mut Reader<B, P>,
         custom_entities: Option<&HashMap<Vec<u8>, Vec<u8>>>,
     ) -> Result<String> {
         let decoded = reader.decode_without_bom(&*self);
@@ -688,9 +690,9 @@ impl<'a> BytesText<'a> {
     }
 
     #[cfg(not(feature = "encoding"))]
-    fn do_unescape_and_decode_without_bom<B: BufRead>(
+    fn do_unescape_and_decode_without_bom<B: BufRead, P: Position>(
         &self,
-        reader: &Reader<B>,
+        reader: &Reader<B, P>,
         custom_entities: Option<&HashMap<Vec<u8>, Vec<u8>>>,
     ) -> Result<String> {
         let decoded = reader.decode_without_bom(&*self)?;
@@ -705,7 +707,10 @@ impl<'a> BytesText<'a> {
     /// it might be wiser to manually use
     /// 1. BytesText::unescaped()
     /// 2. Reader::decode(...)
-    pub fn unescape_and_decode<B: BufRead>(&self, reader: &Reader<B>) -> Result<String> {
+    pub fn unescape_and_decode<B: BufRead, P: Position>(
+        &self, 
+        reader: &Reader<B, P>,
+    ) -> Result<String> {
         self.do_unescape_and_decode_with_custom_entities(reader, None)
     }
 
@@ -719,18 +724,18 @@ impl<'a> BytesText<'a> {
     /// # Pre-condition
     ///
     /// The keys and values of `custom_entities`, if any, must be valid UTF-8.
-    pub fn unescape_and_decode_with_custom_entities<B: BufRead>(
+    pub fn unescape_and_decode_with_custom_entities<B: BufRead, P: Position>(
         &self,
-        reader: &Reader<B>,
+        reader: &Reader<B, P>,
         custom_entities: &HashMap<Vec<u8>, Vec<u8>>,
     ) -> Result<String> {
         self.do_unescape_and_decode_with_custom_entities(reader, Some(custom_entities))
     }
 
     #[cfg(feature = "encoding")]
-    fn do_unescape_and_decode_with_custom_entities<B: BufRead>(
+    fn do_unescape_and_decode_with_custom_entities<B: BufRead, P: Position>(
         &self,
-        reader: &Reader<B>,
+        reader: &Reader<B, P>,
         custom_entities: Option<&HashMap<Vec<u8>, Vec<u8>>>,
     ) -> Result<String> {
         let decoded = reader.decode(&*self);
@@ -740,9 +745,9 @@ impl<'a> BytesText<'a> {
     }
 
     #[cfg(not(feature = "encoding"))]
-    fn do_unescape_and_decode_with_custom_entities<B: BufRead>(
+    fn do_unescape_and_decode_with_custom_entities<B: BufRead, P: Position>(
         &self,
-        reader: &Reader<B>,
+        reader: &Reader<B, P>,
         custom_entities: Option<&HashMap<Vec<u8>, Vec<u8>>>,
     ) -> Result<String> {
         let decoded = reader.decode(&*self)?;

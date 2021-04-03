@@ -24,6 +24,111 @@ enum TagState {
     Exit,
 }
 
+pub trait Position: Default + Clone {
+    fn advance(&mut self, buf: &[u8], read: usize);
+
+    fn rollback(&mut self, unread: usize);
+
+    fn commit(&mut self);
+
+    fn position(&self) -> usize;
+}
+
+/// TODO
+#[derive(Clone)]
+pub struct JustPosition {
+    pos: usize,
+}
+
+impl Position for JustPosition {
+    fn advance(&mut self, buf: &[u8], read: usize) {
+        self.pos += read;
+    }
+
+    fn rollback(&mut self, unread: usize) {
+        self.pos -= unread;
+    }
+
+    fn commit(&mut self) {}
+
+    fn position(&self) -> usize {
+        self.pos
+    }
+}
+
+impl Default for JustPosition {
+    fn default() -> Self {
+        Self {
+            pos: 0,
+        }
+    }
+}
+
+/// TODO
+#[derive(Clone)]
+pub struct PositionWithLine {
+    pos: usize,
+    line: usize,
+    last_line_pos: usize,
+    new_line_positions: Vec<usize>,
+}
+
+impl PositionWithLine {
+    /// TODO
+    pub fn line(&self) -> usize {
+        self.line
+    }
+
+    /// TODO
+    pub fn column(&self) -> usize {
+        if self.last_line_pos == usize::MAX {
+            self.pos + 1
+        } else {
+            self.pos - self.last_line_pos
+        }
+    }
+}
+
+impl Default for PositionWithLine {
+    fn default() -> Self {
+        Self {
+            pos: 0,
+            line: 1,
+            last_line_pos: usize::MAX,
+            new_line_positions: vec!(),
+        }
+    }
+}
+
+impl Position for PositionWithLine {
+    fn advance(&mut self, buf: &[u8], read: usize) {
+        for i in memchr::memchr_iter(b'\n', &buf[..read]) {
+            self.line += 1;
+            self.last_line_pos = self.pos + i;
+            self.new_line_positions.push(self.pos + i);
+        }
+        self.pos += read;
+    }
+
+    fn rollback(&mut self, unread: usize) {
+        for line_pos in self.new_line_positions.iter().rev() {
+            if self.pos - line_pos >= unread {
+                break;
+            }
+            self.line -= 1;
+        }
+        self.pos -= unread;
+    }
+
+    fn commit(&mut self) {
+        self.new_line_positions.clear();
+    }
+
+    fn position(&self) -> usize {
+        self.pos
+    }
+}
+
 /// A low level encoding-agnostic XML event reader.
 ///
 /// Consumes a `BufRead` and streams XML `Event`s.
@@ -63,11 +168,11 @@ enum TagState {
 /// }
 /// ```
 #[derive(Clone)]
-pub struct Reader<B: BufRead> {
+pub struct Reader<B: BufRead, P: Position> {
     /// reader
     reader: B,
     /// current buffer position, useful for debuging errors
-    buf_position: usize,
+    buf_position: P,
     /// current state Open/Close
     tag_state: TagState,
     /// expand empty element into an opening and closing element
@@ -97,11 +202,12 @@ pub struct Reader<B: BufRead> {
     is_encoding_set: bool,
 }
 
-impl<B: BufRead> Reader<B> {
+impl<B: BufRead> Reader<B, JustPosition> {
     /// Creates a `Reader` that reads from a reader implementing `BufRead`.
-    pub fn from_reader(reader: B) -> Reader<B> {
+    pub fn from_reader(reader: B) -> Reader<B, JustPosition> {
         Reader {
             reader,
+            buf_position: JustPosition::default(),
             opened_buffer: Vec::new(),
             opened_starts: Vec::new(),
             tag_state: TagState::Closed,
@@ -110,7 +216,30 @@ impl<B: BufRead> Reader<B> {
             trim_text_end: false,
             trim_markup_names_in_closing_tags: true,
             check_end_names: true,
-            buf_position: 0,
+            check_comments: false,
+            ns_buffer: NamespaceBufferIndex::default(),
+            #[cfg(feature = "encoding")]
+            encoding: ::encoding_rs::UTF_8,
+            #[cfg(feature = "encoding")]
+            is_encoding_set: false,
+        }
+    }
+}
+
+impl<B: BufRead, P: Position> Reader<B, P> {
+    /// TODO
+    pub fn from_reader_with_position_tracker(reader: B, position: P) -> Reader<B, P> {
+        Reader {
+            reader,
+            buf_position: position,
+            opened_buffer: Vec::new(),
+            opened_starts: Vec::new(),
+            tag_state: TagState::Closed,
+            expand_empty_elements: false,
+            trim_text_start: false,
+            trim_text_end: false,
+            trim_markup_names_in_closing_tags: true,
+            check_end_names: true,
             check_comments: false,
             ns_buffer: NamespaceBufferIndex::default(),
             #[cfg(feature = "encoding")]
@@ -131,7 +260,7 @@ impl<B: BufRead> Reader<B> {
     /// [`Empty`]: events/enum.Event.html#variant.Empty
     /// [`Start`]: events/enum.Event.html#variant.Start
     /// [`End`]: events/enum.Event.html#variant.End
-    pub fn expand_empty_elements(&mut self, val: bool) -> &mut Reader<B> {
+    pub fn expand_empty_elements(&mut self, val: bool) -> &mut Reader<B, P> {
         self.expand_empty_elements = val;
         self
     }
@@ -144,7 +273,7 @@ impl<B: BufRead> Reader<B> {
     /// (`false` by default)
     ///
     /// [`Text`]: events/enum.Event.html#variant.Text
-    pub fn trim_text(&mut self, val: bool) -> &mut Reader<B> {
+    pub fn trim_text(&mut self, val: bool) -> &mut Reader<B, P> {
         self.trim_text_start = val;
         self.trim_text_end = val;
         self
@@ -157,7 +286,7 @@ impl<B: BufRead> Reader<B> {
     /// (`false` by default)
     ///
     /// [`Text`]: events/enum.Event.html#variant.Text
-    pub fn trim_text_end(&mut self, val: bool) -> &mut Reader<B> {
+    pub fn trim_text_end(&mut self, val: bool) -> &mut Reader<B, P> {
         self.trim_text_end = val;
         self
     }
@@ -173,7 +302,7 @@ impl<B: BufRead> Reader<B> {
     /// (`true` by default)
     ///
     /// [`End`]: events/enum.Event.html#variant.End
-    pub fn trim_markup_names_in_closing_tags(&mut self, val: bool) -> &mut Reader<B> {
+    pub fn trim_markup_names_in_closing_tags(&mut self, val: bool) -> &mut Reader<B, P> {
         self.trim_markup_names_in_closing_tags = val;
         self
     }
@@ -191,7 +320,7 @@ impl<B: BufRead> Reader<B> {
     /// (`true` by default)
     ///
     /// [`End`]: events/enum.Event.html#variant.End
-    pub fn check_end_names(&mut self, val: bool) -> &mut Reader<B> {
+    pub fn check_end_names(&mut self, val: bool) -> &mut Reader<B, P> {
         self.check_end_names = val;
         self
     }
@@ -206,7 +335,7 @@ impl<B: BufRead> Reader<B> {
     /// (`false` by default)
     ///
     /// [`Comment`]: events/enum.Event.html#variant.Comment
-    pub fn check_comments(&mut self, val: bool) -> &mut Reader<B> {
+    pub fn check_comments(&mut self, val: bool) -> &mut Reader<B, P> {
         self.check_comments = val;
         self
     }
@@ -218,11 +347,21 @@ impl<B: BufRead> Reader<B> {
         // when internal state is Opened, we have actually read until '<',
         // which we don't want to show
         if let TagState::Opened = self.tag_state {
-            self.buf_position - 1
+            self.buf_position.position() - 1
         } else {
-            self.buf_position
+            self.buf_position.position()
         }
     }
+
+    /// TODO
+    pub fn position(&self) -> P {
+        self.buf_position.clone()
+    }
+
+    /// Gets the current line number in the input data.
+    // pub fn line_number(&self) -> usize {
+    //     self.buf_position.line
+    // }
 
     /// private function to read until '<' is found
     /// return a `Text` event
@@ -319,8 +458,8 @@ impl<B: BufRead> Reader<B> {
             &buf[1..]
         };
         if self.check_end_names {
-            let mismatch_err = |expected: &[u8], found: &[u8], buf_position: &mut usize| {
-                *buf_position -= buf.len();
+            let mismatch_err = |expected: &[u8], found: &[u8], buf_position: &mut P| {
+                buf_position.rollback(buf.len());
                 Err(Error::EndEventMismatch {
                     expected: from_utf8(expected).unwrap_or("").to_owned(),
                     found: from_utf8(found).unwrap_or("").to_owned(),
@@ -358,7 +497,7 @@ impl<B: BufRead> Reader<B> {
                 buf.push(b'>');
                 match read_until(&mut self.reader, b'>', buf, &mut self.buf_position) {
                     Ok(0) => {
-                        self.buf_position -= buf.len() - buf_start;
+                        self.buf_position.rollback(buf.len() - buf_start);
                         return Err(Error::UnexpectedEof("Comment".to_string()));
                     }
                     Ok(_) => (),
@@ -371,7 +510,7 @@ impl<B: BufRead> Reader<B> {
                 if let Some(p) = memchr::memchr_iter(b'-', &buf[buf_start + 3..len - 2])
                     .position(|p| buf[buf_start + 3 + p + 1] == b'-')
                 {
-                    self.buf_position -= buf.len() - buf_start + p;
+                    self.buf_position.rollback(buf.len() - buf_start + p);
                     return Err(Error::UnexpectedToken("--".to_string()));
                 }
             }
@@ -385,7 +524,7 @@ impl<B: BufRead> Reader<B> {
                         buf.push(b'>');
                         match read_until(&mut self.reader, b'>', buf, &mut self.buf_position) {
                             Ok(0) => {
-                                self.buf_position -= buf.len() - buf_start;
+                                self.buf_position.rollback(buf.len() - buf_start);
                                 return Err(Error::UnexpectedEof("CData".to_string()));
                             }
                             Ok(_) => (),
@@ -402,7 +541,7 @@ impl<B: BufRead> Reader<B> {
                         buf.push(b'>');
                         match read_until(&mut self.reader, b'>', buf, &mut self.buf_position) {
                             Ok(0) => {
-                                self.buf_position -= buf.len() - buf_start;
+                                self.buf_position.rollback(buf.len() - buf_start);
                                 return Err(Error::UnexpectedEof("DOCTYPE".to_string()));
                             }
                             Ok(n) => {
@@ -420,7 +559,7 @@ impl<B: BufRead> Reader<B> {
                 _ => Err(Error::UnexpectedBang),
             }
         } else {
-            self.buf_position -= buf.len() - buf_start;
+            self.buf_position.rollback(buf.len() - buf_start);
             Err(Error::UnexpectedBang)
         }
     }
@@ -443,7 +582,7 @@ impl<B: BufRead> Reader<B> {
                 Ok(Event::PI(BytesText::from_escaped(&buf[1..len - 1])))
             }
         } else {
-            self.buf_position -= len;
+            self.buf_position.rollback(len);
             Err(Error::UnexpectedEof("XmlDecl".to_string()))
         }
     }
@@ -461,7 +600,7 @@ impl<B: BufRead> Reader<B> {
                 Ok(Event::PI(BytesText::from_escaped(&buf[1..len - 1])))
             }
         } else {
-            self.buf_position -= len;
+            self.buf_position.rollback(len);
             Err(Error::UnexpectedEof("XmlDecl".to_string()))
         }
     }
@@ -554,6 +693,7 @@ impl<B: BufRead> Reader<B> {
             Err(_) | Ok(Event::Eof) => self.tag_state = TagState::Exit,
             _ => {}
         }
+        self.buf_position.commit();
         event
     }
 
@@ -856,7 +996,7 @@ impl<B: BufRead> Reader<B> {
     ///
     /// ```
     /// use std::{str, io::Cursor};
-    /// use quick_xml::Reader;
+    /// use quick_xml::{JustPosition, Reader};
     /// use quick_xml::events::Event;
     ///
     /// let xml = r#"<tag1 att1 = "test">
@@ -866,7 +1006,7 @@ impl<B: BufRead> Reader<B> {
     /// let mut reader = Reader::from_reader(Cursor::new(xml.as_bytes()));
     /// let mut buf = Vec::new();
     ///
-    /// fn into_line_and_column(reader: Reader<Cursor<&[u8]>>) -> (usize, usize) {
+    /// fn into_line_and_column(reader: Reader<Cursor<&[u8]>, JustPosition>) -> (usize, usize) {
     ///     let end_pos = reader.buffer_position();
     ///     let mut cursor = reader.into_underlying_reader();
     ///     let s = String::from_utf8(cursor.into_inner()[0..end_pos].to_owned())
@@ -905,30 +1045,39 @@ impl<B: BufRead> Reader<B> {
     }
 }
 
-impl Reader<BufReader<File>> {
+impl Reader<BufReader<File>, JustPosition> {
     /// Creates an XML reader from a file path.
-    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Reader<BufReader<File>>> {
+    pub fn from_file<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<Reader<BufReader<File>, JustPosition>> {
         let file = File::open(path).map_err(Error::Io)?;
         let reader = BufReader::new(file);
-        Ok(Reader::from_reader(reader))
+        Ok(Reader::<_, _>::from_reader(reader))
     }
 }
 
-impl<'a> Reader<&'a [u8]> {
+impl<'a> Reader<&'a [u8], JustPosition> {
     /// Creates an XML reader from a string slice.
-    pub fn from_str(s: &'a str) -> Reader<&'a [u8]> {
+    pub fn from_str(s: &'a str) -> Reader<&'a [u8], JustPosition> {
         Reader::from_reader(s.as_bytes())
+    }
+}
+
+impl<'a, P: Position> Reader<&'a [u8], P> {
+    /// Creates an XML reader from a string slice.
+    pub fn from_str_with_position_tracker(s: &'a str, p: P) -> Reader<&'a [u8], P> {
+        Reader::from_reader_with_position_tracker(s.as_bytes(), p)
     }
 }
 
 /// read until `byte` is found or end of file
 /// return the position of byte
 #[inline]
-fn read_until<R: BufRead>(
+fn read_until<R: BufRead, P: Position>(
     r: &mut R,
     byte: u8,
     buf: &mut Vec<u8>,
-    position: &mut usize,
+    position: &mut P,
 ) -> Result<usize> {
     let mut read = 0;
     let mut done = false;
@@ -939,12 +1088,11 @@ fn read_until<R: BufRead>(
                 Ok(n) => n,
                 Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => {
-                    *position += read;
                     return Err(Error::Io(e));
                 }
             };
 
-            match memchr::memchr(byte, available) {
+            let used = match memchr::memchr(byte, available) {
                 Some(i) => {
                     buf.extend_from_slice(&available[..i]);
                     done = true;
@@ -954,12 +1102,13 @@ fn read_until<R: BufRead>(
                     buf.extend_from_slice(available);
                     available.len()
                 }
-            }
+            };
+            position.advance(available, used);
+            used
         };
         r.consume(used);
         read += used;
     }
-    *position += read;
     Ok(read)
 }
 
@@ -974,11 +1123,11 @@ fn read_until<R: BufRead>(
 /// (`Reference` is something like `&quot;`, but we don't care about escaped characters at this
 /// level)
 #[inline]
-fn read_elem_until<R: BufRead>(
+fn read_elem_until<R: BufRead, P: Position>(
     r: &mut R,
     end_byte: u8,
     buf: &mut Vec<u8>,
-    position: &mut usize,
+    position: &mut P,
 ) -> Result<usize> {
     #[derive(Clone, Copy)]
     enum State {
@@ -999,7 +1148,6 @@ fn read_elem_until<R: BufRead>(
                 Ok(n) => n,
                 Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) => {
-                    *position += read;
                     return Err(Error::Io(e));
                 }
             };
@@ -1034,12 +1182,12 @@ fn read_elem_until<R: BufRead>(
                     }
                 }
             }
+            position.advance(available, used);
             used
         };
         r.consume(used);
         read += used;
     }
-    *position += read;
     Ok(read)
 }
 

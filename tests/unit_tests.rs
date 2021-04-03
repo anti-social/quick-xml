@@ -5,7 +5,7 @@ use std::str::from_utf8;
 
 use quick_xml::events::Event::*;
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
-use quick_xml::{Reader, Result, Writer};
+use quick_xml::{PositionWithLine, Reader, Result, Writer};
 
 macro_rules! next_eq_name {
     ($r:expr, $t:tt, $bytes:expr) => {
@@ -481,16 +481,20 @@ fn test_buf_position_err_comment_2_buf() {
 
 #[test]
 fn test_buf_position_err_comment_trim_text() {
-    let mut r = Reader::from_str("<a>\r\n <!--b>");
+    let mut r = Reader::from_str_with_position_tracker("<a>\r\n <!--b>", PositionWithLine::default());
     r.trim_text(true).check_end_names(true);
 
     next_eq!(r, Start, b"a");
     assert_eq!(r.buffer_position(), 3);
+    assert_eq!(r.position().line(), 1);
+    assert_eq!(r.position().column(), 4);
 
     let mut buf = Vec::new();
     match r.read_event(&mut buf) {
         Err(_) if r.buffer_position() == 7 => {
             // error at char 5: no closing --> tag found
+            assert_eq!(r.position().line(), 2);
+            assert_eq!(r.position().column(), 3);
             assert!(true);
         }
         Err(e) => panic!(
